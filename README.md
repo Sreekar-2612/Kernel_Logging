@@ -9,8 +9,6 @@
 
 An enterprise-grade, high-performance structured event logging subsystem engineered directly into the **xv6 multi-core operating system kernel**. Inspired by production OS architectures such as Linux's `dmesg`/`printk`/`/dev/kmsg` and Windows Event Tracing (ETW), this subsystem provides real-time, low-latency, structured event capture across multi-core processors with **<1% CPU overhead**.
 
-**Author / Maintainer:** Sreekar Tirumala  
-**Email:** sreekartirumala0706@gmail.com  
 **Target Operating System:** MIT xv6 (x86 Multi-Core Teaching OS)  
 
 ---
@@ -302,4 +300,4 @@ Kernel_Logging/
 ---
 
 ## 📜 License & Attribution
-Based on MIT's xv6 operating system. Kernel Event Logging Subsystem (v2.0) designed and engineered by **Sreekar Tirumala**.
+Based on MIT's xv6 operating system.
