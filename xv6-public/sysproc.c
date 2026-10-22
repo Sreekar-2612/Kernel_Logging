@@ -202,6 +202,10 @@ sys_klogctl(void)
     return 0;
   }
   
+  case KLOG_CMD_PANIC_TEST:
+    panic("flight recorder post-mortem crash dump triggered by user test");
+    return 0;
+    
   default:
     return -1;
   }

@@ -14,6 +14,7 @@
 #include "mmu.h"
 #include "proc.h"
 #include "x86.h"
+#include "klog.h"
 
 static void consputc(int);
 
@@ -118,6 +119,11 @@ panic(char *s)
   getcallerpcs(&s, pcs);
   for(i=0; i<10; i++)
     cprintf(" %p", pcs[i]);
+  cprintf("\n");
+  
+  // Dump in-flight flight recorder logs from circular buffers
+  klog_panic_dump();
+  
   panicked = 1; // freeze other CPU
   for(;;)
     ;

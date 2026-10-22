@@ -35,8 +35,8 @@ test_getklog(void)
   
   printf(1, "  PASS: Retrieved %d records successfully. Sample:\n", count);
   for(i = 0; i < count && i < 4; i++){
-    printf(1, "    [%d] Core%d PID%d: %s\n",
-           entries[i].seq, entries[i].cpu, entries[i].pid, entries[i].msg);
+    printf(1, "    [%d] Core%d PID%d Subsys%d: %s\n",
+           entries[i].seq, entries[i].cpu, entries[i].pid, entries[i].subsys, entries[i].msg);
   }
   
   free(entries);

@@ -99,7 +99,7 @@ klogdev_write(struct inode *ip, char *buf, int n)
   // If a different process started writing, flush any partial buffer first
   if(klog_writer.len > 0 && klog_writer.pid != caller_pid){
     klog_writer.buf[klog_writer.len] = '\0';
-    klog_printf("user[%d]: %s", klog_writer.pid, klog_writer.buf);
+    klog_printf_subsys(KLOG_SUBSYS_USER, KLOG_INFO, "user[%d]: %s", klog_writer.pid, klog_writer.buf);
     klog_writer.len = 0;
   }
   klog_writer.pid = caller_pid;
@@ -109,7 +109,7 @@ klogdev_write(struct inode *ip, char *buf, int n)
     if(ch == '\n' || ch == '\r'){
       if(klog_writer.len > 0){
         klog_writer.buf[klog_writer.len] = '\0';
-        klog_printf("user[%d]: %s", caller_pid, klog_writer.buf);
+        klog_printf_subsys(KLOG_SUBSYS_USER, KLOG_INFO, "user[%d]: %s", caller_pid, klog_writer.buf);
         klog_writer.len = 0;
       }
     } else {
@@ -118,7 +118,7 @@ klogdev_write(struct inode *ip, char *buf, int n)
       } else {
         // Buffer limit reached: emit current chunk and start new
         klog_writer.buf[klog_writer.len] = '\0';
-        klog_printf("user[%d]: %s", caller_pid, klog_writer.buf);
+        klog_printf_subsys(KLOG_SUBSYS_USER, KLOG_INFO, "user[%d]: %s", caller_pid, klog_writer.buf);
         klog_writer.buf[0] = ch;
         klog_writer.len = 1;
       }
@@ -128,7 +128,7 @@ klogdev_write(struct inode *ip, char *buf, int n)
   // If this was a block write without a newline (e.g., klog_test), flush immediately
   if(n > 1 && klog_writer.len > 0){
     klog_writer.buf[klog_writer.len] = '\0';
-    klog_printf("user[%d]: %s", caller_pid, klog_writer.buf);
+    klog_printf_subsys(KLOG_SUBSYS_USER, KLOG_INFO, "user[%d]: %s", caller_pid, klog_writer.buf);
     klog_writer.len = 0;
   }
   

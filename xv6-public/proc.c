@@ -219,7 +219,7 @@ fork(void)
 
   release(&ptable.lock);
 
-  klog_printf("fork: pid %d created child %d", curproc->pid, pid);
+  klog_proc(KLOG_INFO, "fork: pid %d created child %d", curproc->pid, pid);
 
   return pid;
 }
@@ -237,7 +237,7 @@ exit(void)
   if(curproc == initproc)
     panic("init exiting");
 
-  klog_printf("exit: pid %d exiting", curproc->pid);
+  klog_proc(KLOG_INFO, "exit: pid %d exiting", curproc->pid);
 
   // Close all open files.
   for(fd = 0; fd < NOFILE; fd++){

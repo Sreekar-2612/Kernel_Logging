@@ -24,7 +24,7 @@ exec(char *path, char **argv)
 
   if((ip = namei(path)) == 0){
     end_op();
-    klog_error("exec: file not found %s", path);
+    klog_proc(KLOG_ERROR, "exec: file not found %s", path);
     cprintf("exec: fail\n");
     return -1;
   }
@@ -105,7 +105,7 @@ exec(char *path, char **argv)
   freevm(oldpgdir);
   
   // Log after name is safely copied
-  klog_info("exec: %s", curproc->name);
+  klog_proc(KLOG_INFO, "exec: %s", curproc->name);
   return 0;
 
  bad:

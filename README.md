@@ -7,7 +7,7 @@
 [![Syscall](https://img.shields.io/badge/Syscall-sys__klogctl%20(23)-yellow.svg)](file:///)
 [![Status](https://img.shields.io/badge/Status-Production%20Ready-brightgreen.svg)](file:///)
 
-An enterprise-grade, high-performance structured event logging subsystem engineered directly into the **xv6 multi-core operating system kernel**. Inspired by production OS architectures such as Linux's `dmesg`/`printk`/`/dev/kmsg` and Windows Event Tracing (ETW), this subsystem provides real-time, low-latency, structured event capture across multi-core processors with **<1% CPU overhead**.
+An enterprise-grade, high-performance structured event logging subsystem engineered directly into the **xv6 multi-core operating system kernel**. Inspired by production OS architectures such as Linux's `dmesg`/`printk`/`/dev/kmsg`, eBPF subsystem tracing, and Windows Event Tracing (ETW), this subsystem provides real-time, low-latency, structured event capture across multi-core processors with **<1% CPU overhead**.
 
 **Target Operating System:** MIT xv6 (x86 Multi-Core Teaching OS)  
 
@@ -18,16 +18,16 @@ An enterprise-grade, high-performance structured event logging subsystem enginee
 2. [Key Architecture & Novel Features](#-key-architecture--novel-features)
 3. [System Architecture Diagram](#-system-architecture-diagram)
 4. [Structured Event Schema](#-structured-event-schema)
-5. [Subsystem Components](#-subsystem-components)
-   - [Core Ring Buffer Engine (`klog.c`)](#1-core-ring-buffer-engine-klogc)
-   - [Character Device Driver (`klogdev.c`)](#2-bi-directional-character-device-driver-klogdevc)
-   - [Administrative Syscall (`sys_klogctl`)](#3-administrative-system-call-sys_klogctl---syscall-23)
-   - [User-Space CLI Inspection Tool (`ulog_tool`)](#4-user-space-cli-inspection-tool-ulog_tool)
-6. [Interactive Walkthrough & Usage](#-interactive-walkthrough--usage)
-7. [Automated Verification Suite (`klog_test`)](#-automated-verification-suite-klog_test)
-8. [Build and Execution Guide](#-build-and-execution-guide)
-9. [Project Directory Structure](#-project-directory-structure)
-10. [Engineering Highlights & Resume Metrics](#-engineering-highlights--resume-metrics)
+5. [Novelty Deep Dives](#-novelty-deep-dives)
+   - [✈️ Feature 1: The "Black Box" Flight Recorder (Panic Post-Mortem Dump)](#1-✈️-the-black-box-flight-recorder-panic-post-mortem-dump)
+   - [🏷️ Feature 2: Subsystem Categorization & Selective Tracing (eBPF-lite)](#2-🏷️-subsystem-categorization--selective-tracing-ebpf-lite)
+   - [🔄 Feature 3: Bi-Directional Line-Buffered `/dev/klog`](#3-🔄-bi-directional-line-buffered-devklog)
+6. [Subsystem Components](#-subsystem-components)
+7. [Interactive Walkthrough & Usage](#-interactive-walkthrough--usage)
+8. [Automated Verification Suite (`klog_test`)](#-automated-verification-suite-klog_test)
+9. [Build and Execution Guide](#-build-and-execution-guide)
+10. [Project Directory Structure](#-project-directory-structure)
+11. [Engineering Highlights & Resume Description](#-engineering-highlights--resume-description)
 
 ---
 
@@ -37,25 +37,29 @@ In standard operating systems like vanilla xv6:
 * **Intrusive Console I/O:** Any debugging or status output relies on `cprintf()`, which synchronously writes bytes out to the UART/VGA hardware. This blocks CPU execution and alters real-time scheduling (creating "Heisenbugs").
 * **Multi-Core Lock Contention:** A single global console spinlock creates severe serialization bottlenecks when multiple CPU cores attempt to log events concurrently.
 * **Ephemeral Output:** Once characters scroll off the terminal screen, all diagnostic history is permanently lost.
-* **Unstructured Text:** Raw string outputs cannot be programmatically parsed, queried, or filtered by Process ID, severity level, or CPU core.
+* **Silent Crashes:** When a kernel panics, developers have no visibility into what processes, system calls, or file descriptors were active just before the system halted.
+* **Unstructured Text:** Raw string outputs cannot be programmatically parsed, queried, or filtered by Process ID, severity level, or subsystem.
 
 ### The v2.0 Solution
-This subsystem replaces blocking console writes with **non-blocking in-memory circular ring buffers**. Events are recorded in sub-microsecond time, ordered across CPU cores using hardware timestamping, and exposed through standard Unix file abstractions and system calls.
+This subsystem replaces blocking console writes with **non-blocking in-memory circular ring buffers**. Events are recorded in sub-microsecond time, ordered across CPU cores using hardware timestamping, tagged by subsystem, and exposed through standard Unix file abstractions, system calls, and automated post-mortem crash dumps.
 
 ---
 
 ## ⚡ Key Architecture & Novel Features
 
 * **Zero-Contention Per-CPU Ring Buffers:** Each CPU core (up to 8 cores) possesses an isolated 256-record circular ring buffer with dedicated per-core spinlocks. Cross-core write operations never block each other.
+* **✈️ "Black Box" Flight Recorder:** An automated crash post-mortem dump hooked into `panic()`. When a fatal kernel error occurs, the kernel dumps the last in-flight events across all CPU cores directly to the console before freezing, enabling instantaneous root-cause analysis.
+* **🏷️ Subsystem Categorization (eBPF-lite Tracing):** Every event is classified under a dedicated kernel subsystem (`CORE`, `PROC`, `FS`, `MEM`, `TRAP`, `DEV`, `USER`), enabling targeted filtering (`ulog_tool -t FS`).
 * **Hardware Sub-Microsecond RDTSC Ordering:** Every event captures the x86 `RDTSC` (Read Time-Stamp Counter) clock cycle count combined with an atomic monotonic sequence ticket (`seq`), guaranteeing strict chronological sorting across multi-core CPUs.
 * **Bi-Directional `/dev/klog` (Major Device 2):** Supports streaming sequential reads and user-to-kernel event injection (mirroring Linux `/dev/kmsg`). Includes a per-process line-buffering accumulator for single-byte shell streams.
 * **Administrative Syscall `klogctl` (Syscall 23):** Provides kernel-level management operations:
   * `KLOG_CMD_READ (0)`: Atomically retrieve multi-core merged snapshots.
   * `KLOG_CMD_CLEAR (1)`: Atomically flush all ring buffers.
   * `KLOG_CMD_STATS (2)`: Query real-time kernel telemetry (buffer capacities, total sequence counts, dropped/overwritten record statistics).
+  * `KLOG_CMD_PANIC_TEST (3)`: Trigger a diagnostic test panic to demonstrate the Black Box flight recorder.
 * **Stack-Safe Dynamic Paging:** Protects against xv6's strict 4KB kernel stack limit by allocating temporary staging pages via `kalloc()` rather than large stack-allocated arrays.
 * **Accurate Overwrite Tracking:** Tracks overwritten/dropped records via `struct klog_stats` during high-volume bursts.
-* **Modern CLI Tool (`ulog_tool`):** A command-line inspection utility featuring ANSI color-coded severity levels (`DEBUG`, `INFO`, `WARN`, `ERROR`), PID filtering, buffer clearing, and telemetry diagnostics.
+* **Modern CLI Tool (`ulog_tool`):** A command-line inspection utility featuring ANSI color-coded severity levels (`DEBUG`, `INFO`, `WARN`, `ERROR`), subsystem badges (`[PROC]`, `[FS  ]`, etc.), PID filtering, buffer clearing, and telemetry diagnostics.
 
 ---
 
@@ -66,7 +70,7 @@ This subsystem replaces blocking console writes with **non-blocking in-memory ci
 |                               USER SPACE                                |
 |                                                                         |
 |   [ ulog_tool CLI ]        [ Shell Scripts ]       [ User Applications] |
-|   ulog_tool -l / -p / -s    echo "msg" > klog       write(/dev/klog)    |
+|   ulog_tool -l / -p / -t    echo "msg" > klog       write(/dev/klog)    |
 +----------|------------------------|-------------------------|-----------+
            | sys_klogctl()          | write()                 | write()
 +----------v------------------------v-------------------------v-----------+
@@ -87,10 +91,11 @@ This subsystem replaces blocking console writes with **non-blocking in-memory ci
 |  |   [ 256 records ]      [ 256 records ]          [ 256 records ]    | |
 |  |   Spinlock Core 0      Spinlock Core 1          Spinlock Core 7    | |
 |  +--------------------------------------------------------------------+ |
-|                              ^                                          |
-|           Kernel Event Hooks | (fork, exec, exit, sysfile, trap)        |
-|                              |                                          |
-|        [ proc.c ]      [ exec.c ]      [ sysfile.c ]      [ trap.c ]    |
+|         |                    ^                                          |
+|         | panic_dump()       | Kernel Event Hooks                       |
+|         v                    | (proc, exec, sysfile, trap)              |
+|   [ console.c ]              +------------------------------------------+
+|   (Black Box Dump)
 +-------------------------------------------------------------------------+
 ```
 
@@ -98,101 +103,117 @@ This subsystem replaces blocking console writes with **non-blocking in-memory ci
 
 ## 📊 Structured Event Schema
 
-Every log entry recorded by the kernel is packed into a high-efficiency binary structure (`klog.h`):
+Every log entry recorded by the kernel is packed into an aligned binary structure (`klog.h`):
 
 ```c
 struct klog_entry {
-  uint seq;              // Monotonic global event sequence number
-  uint timestamp;        // Hardware x86 RDTSC CPU clock cycles
-  uint cpu;              // CPU core ID that captured the event (0..7)
-  uint pid;              // Process ID of the active task
-  uint level;            // Severity: 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR
-  char msg[64];          // Formatted text message payload
+  uint seq;           // Monotonically increasing sequence ID
+  uint timestamp_hi;  // CPU cycle counter upper 32-bits (RDTSC)
+  uint timestamp_lo;  // CPU cycle counter lower 32-bits (RDTSC)
+  uint cpu;           // Originating processor hardware ID (0..7)
+  uint pid;           // Originating process ID (0 indicates kernel)
+  uint level;         // Severity ranking: DEBUG, INFO, WARN, ERROR
+  uint subsys;        // Subsystem category ID (CORE, PROC, FS, MEM, TRAP, DEV, USER)
+  char msg[64];       // Formatted text message payload
 };
 ```
 
 ---
 
-## 🧩 Subsystem Components
+## 🔬 Novelty Deep Dives
 
-### 1. Core Ring Buffer Engine (`klog.c`)
-* Maintains a statically allocated array of `struct per_cpu_log` structures (`NCPU = 8`).
-* Lock acquisition is strictly partitioned by `cpuid()`.
-* Implements multi-core snapshot merging: reads chronological records across all active CPUs by sorting monotonic sequence IDs into a caller-supplied staging buffer.
+### 1. ✈️ The "Black Box" Flight Recorder (Panic Post-Mortem Dump)
+In production operating systems, when the kernel crashes, the in-memory ring buffer holds the final clues needed to diagnose the failure. 
 
-### 2. Bi-Directional Character Device Driver (`klogdev.c`)
-* Registered as **Major Device 2** (`#define KLOG 2`) in `devsw[]`.
-* **Read Handler:** Streams structured `klog_entry` records to user space using `copyout()`. Uses a dynamic `kalloc()` page buffer to prevent kernel stack overflows.
-* **Write Handler:** Parses user-space log messages. Features an accumulator that buffers single-byte streams (e.g., xv6 `printf` or `echo`) until a newline (`\n`) is reached, logging clean single-line events tagged as `user[PID]: <message>`.
+In this subsystem, `panic()` in `console.c` is hooked to invoke `klog_panic_dump()`. It performs a **lock-free** chronological extraction of the last in-flight events across all active CPU ring buffers before the processor halts:
 
-### 3. Administrative System Call (`sys_klogctl` - Syscall 23)
-Exposed to user space as `int klogctl(int cmd, void *arg, int size)`:
-* `KLOG_CMD_READ (0)`: Copies recent structured log snapshots.
-* `KLOG_CMD_CLEAR (1)`: Atomically resets ring buffer head pointers and sequence numbers.
-* `KLOG_CMD_STATS (2)`: Populates a `struct klog_stats` telemetry block:
-  ```c
-  struct klog_stats {
-    uint total_seq;        // Total lifetime events logged
-    uint total_dropped;    // Overwritten records during buffer wrap-around
-    uint cpu_count;        // Active CPUs configured in the system
-    uint buf_capacity;     // Number of records per core buffer (256)
-  };
-  ```
+```text
+lapicid 0: panic: flight recorder post-mortem crash dump triggered by user test
+ 0x801048b2 0x8010531c 0x80104e90 0x0 0x0 0x0 0x0 0x0 0x0 0x0
 
-### 4. User-Space CLI Inspection Tool (`ulog_tool`)
-The primary user-facing tool for viewing and managing logs. Supports POSIX-style flags:
-* `ulog_tool`: Prints recent events color-coded by severity.
-* `ulog_tool -n <count>`: Limits output to the last `<count>` events.
-* `ulog_tool -l <DEBUG|INFO|WARN|ERROR>`: Filters events at or above a minimum severity.
-* `ulog_tool -p <PID>`: Filters events originating from a specific process.
-* `ulog_tool -c`: Clears and resets all kernel log ring buffers.
-* `ulog_tool -s`: Displays real-time kernel telemetry and dropped packet counters.
-* `ulog_tool -h`: Displays help and usage information.
+============================================================
+   FLIGHT RECORDER: POST-MORTEM KERNEL LOG TRACE            
+============================================================
+  [4] Core0 PID1 [PROC]: fork: pid 1 created child 2
+  [5] Core0 PID2 [PROC]: exec: sh
+  [6] Core0 PID2 [FS  ]: open: console fd=3
+  [7] Core0 PID2 [PROC]: fork: pid 2 created child 3
+  [8] Core0 PID3 [FS  ]: open: created file klog
+  [9] Core0 PID3 [DEV ]: open: klog fd=1
+  [10] Core0 PID3 [USER]: user[3]: Hello from user space
+  [11] Core0 PID3 [PROC]: exit: pid 3 exiting
+  [12] Core0 PID2 [PROC]: fork: pid 2 created child 4
+  [13] Core0 PID4 [PROC]: exec: panic_test
+============================================================
+```
+You can demonstrate this live in xv6 by running:
+```sh
+$ panic_test
+```
+
+### 2. 🏷️ Subsystem Categorization & Selective Tracing (eBPF-lite)
+Events are tagged by kernel domain at the point of origin:
+* `[CORE]`: Kernel initialization, boot stages, administrator flushes
+* `[PROC]`: Process lifecycle (`fork`, `exec`, `exit`)
+* `[FS  ]`: File system operations (`open`, `read`, `write`, `create`)
+* `[MEM ]`: Dynamic memory allocation (`kalloc`, `kfree`, `sbrk`)
+* `[TRAP]`: Hardware interrupts, page faults, and system call traps
+* `[DEV ]`: Device driver operations (`console`, `klog`, `ide`)
+* `[USER]`: User-space injected events via `/dev/klog`
+
+Users can selectively trace only the subsystems they care about:
+```sh
+$ ulog_tool -t FS        # View only file-system events
+$ ulog_tool -t PROC      # View only process management events
+$ ulog_tool -t USER      # View only user-injected entries
+```
+
+### 3. 🔄 Bi-Directional Line-Buffered `/dev/klog`
+Standard character devices in xv6 process byte-by-byte streams. When user-space utilities (such as `echo` or `printf`) write text, each character triggers an independent 1-byte `write()` syscall. 
+
+Our driver implements a **line-buffering accumulator** that buffers single characters until a newline (`\n` or `\r`) is detected or the buffer limit is reached, emitting a unified, clean log entry.
 
 ---
 
 ## 💻 Interactive Walkthrough & Usage
 
-### 1. View System Event Stream
+### 1. View System Event Stream with Subsystem Badges
 ```sh
-$ ulog_tool -n 5
-Kernel Event Stream (5 records retrieved):
+$ ulog_tool -n 6
+Kernel Event Stream (6 records retrieved):
 ------------------------------------------------------------
-[10] INFO  Core0 PID3: user[3]: Hello from user space
-[11] INFO  Core0 PID3: exit: pid 3 exiting
-[12] INFO  Core0 PID2: fork: pid 2 created child 4
-[13] INFO  Core0 PID4: exec: ulog_tool
-[14] INFO  Core0 PID4: exit: pid 4 exiting
+[10] INFO  [USER] Core0 PID3: user[3]: Hello from user space
+[11] INFO  [PROC] Core0 PID3: exit: pid 3 exiting
+[12] INFO  [PROC] Core0 PID2: fork: pid 2 created child 4
+[13] INFO  [PROC] Core0 PID4: exec: ulog_tool
+[14] INFO  [PROC] Core0 PID4: exit: pid 4 exiting
+[15] INFO  [FS  ] Core0 PID2: open: console fd=3
 ```
 
-### 2. Inject User Space Events into the Kernel Log
-You can inject custom events from the shell or user programs using standard redirection:
+### 2. Selective Subsystem Tracing (`-t`)
+```sh
+$ ulog_tool -t FS
+Kernel Event Stream (2 records retrieved):
+------------------------------------------------------------
+[2]  WARN  [FS  ] Core0 PID1: open: file not found console
+[15] INFO  [FS  ] Core0 PID2: open: console fd=3
+```
+
+### 3. Inject User Events into Kernel Log
 ```sh
 $ echo Database service initialized > klog
-$ ulog_tool -n 4
-Kernel Event Stream (4 records retrieved):
+$ ulog_tool -t USER
+Kernel Event Stream (1 records retrieved):
 ------------------------------------------------------------
-[18] INFO  Core0 PID5: user[5]: Database service initialized
-[19] INFO  Core0 PID5: exit: pid 5 exiting
-[20] INFO  Core0 PID2: fork: pid 2 created child 6
-[21] INFO  Core0 PID6: exec: ulog_tool
+[18] INFO  [USER] Core0 PID5: user[5]: Database service initialized
 ```
 
-### 3. Filter by Severity Level
+### 4. Filter by Severity Level
 ```sh
 $ ulog_tool -l WARN
 Kernel Event Stream (1 records retrieved):
 ------------------------------------------------------------
-[2] WARN  Core0 PID1: open: file not found console
-```
-
-### 4. Filter by Process ID (PID)
-```sh
-$ ulog_tool -p 2
-Kernel Event Stream (2 records retrieved):
-------------------------------------------------------------
-[4] INFO  Core0 PID2: fork: pid 1 created child 2
-[5] INFO  Core0 PID2: exec: sh
+[2] WARN  [FS  ] Core0 PID1: open: file not found console
 ```
 
 ### 5. Inspect Subsystem Telemetry
@@ -201,7 +222,7 @@ $ ulog_tool -s
 ===============================================
    xv6 Kernel Logging Subsystem Telemetry      
 ===============================================
-  Total Log Sequence ID : 42
+  Total Log Sequence ID : 48
   Active CPU Cores      : 1
   Capacity Per Core     : 256 entries
   Dropped/Overwritten   : 0 entries
@@ -211,30 +232,36 @@ $ ulog_tool -s
 ### 6. Atomically Clear Ring Buffers
 ```sh
 $ ulog_tool -c
-ulog_tool: kernel log ring buffers flushed successfully
+[+] Kernel log ring buffers cleared successfully.
+```
+
+### 7. Trigger Flight Recorder Crash Test
+```sh
+$ panic_test
 ```
 
 ---
 
 ## 🧪 Automated Verification Suite (`klog_test`)
 
-The subsystem includes a comprehensive 4-phase automated verification program (`klog_test.c`):
+The subsystem includes a comprehensive 4-phase automated verification program:
 
 ```sh
 $ klog_test
 ==================================================
    xv6 Kernel Logging Subsystem Test Suite        
 ==================================================
-[TEST 1] Testing /dev/klog device node registration...
-  PASS: /dev/klog opened successfully (fd=3)
-[TEST 2] Testing user write injection into /dev/klog...
+[TEST 1] Testing getklog() syscall...
+  PASS: Retrieved 12 records successfully. Sample:
+    [0] Core0 PID0 Subsys0: klog: kernel event logging subsystem initialized (v2.0)
+    [1] Core0 PID1 Subsys1: exec: init
+[TEST 2] Testing /dev/klog character device streaming read...
+  PASS: Read 3 entries via character device
+[TEST 3] Testing user write injection into /dev/klog...
   PASS: Write injection succeeded (26 bytes written)
-[TEST 3] Testing high-volume ring buffer wrap-around (300 events)...
+[TEST 4] Testing high-volume ring buffer wrap-around (300 events)...
   PASS: Emitted 300 events into kernel ring buffer
   PASS: Retrieved 48 entries (monotonic sequence verified)
-[TEST 4] Testing administrative klogctl syscall...
-  PASS: klogctl(KLOG_CMD_STATS) verified capacity: 256
-  PASS: klogctl(KLOG_CMD_CLEAR) executed successfully
 ==================================================
    ALL KLOG SUBSYSTEM TESTS PASSED!               
 ==================================================
@@ -256,7 +283,7 @@ sudo apt install -y build-essential gcc-multilib qemu-system-x86
 cd Kernel_Logging/xv6-public
 
 # Compile kernel and file system
-make
+make clean && make fs.img
 
 # Boot xv6 inside QEMU (terminal mode)
 make qemu-nox
@@ -273,28 +300,30 @@ Kernel_Logging/
 ├── DEMO.md                 # Interactive step-by-step demonstration guide
 ├── PROJECT_REPORT.md       # In-depth engineering specification & benchmark report
 └── xv6-public/             # xv6 Unix Kernel Source Tree
-    ├── klog.h              # Subsystem interface, constants & struct definitions
-    ├── klog.c              # Multi-core ring buffer engine & merge sort logic
+    ├── klog.h              # Subsystem interface, categories, constants & structs
+    ├── klog.c              # Multi-core ring buffer engine & flight recorder logic
     ├── klogdev.c           # /dev/klog character device driver (read/write/buffer)
-    ├── ulog_tool.c         # User-space CLI tool with ANSI color formatting
+    ├── ulog_tool.c         # User-space CLI tool with ANSI colors and -t filtering
     ├── klog_test.c         # 4-phase automated verification test suite
+    ├── panic_test.c        # Flight recorder crash diagnostic test program
     ├── syscall.h           # Syscall vector definitions (SYS_klogctl = 23)
     ├── syscall.c           # Syscall dispatch table
     ├── sysproc.c           # Kernel implementation of sys_klogctl()
-    ├── user.h              # User-space syscall declarations
-    ├── usys.S              # Assembly system call stubs
+    ├── user.h              # User-space declarations and constants
+    ├── console.c           # panic() hook triggering flight recorder dump
     ├── init.c              # Auto-creates /dev/klog (mknod) on boot
-    ├── file.h              # Major device identifier (#define KLOG 2)
     └── Makefile            # Automated build and QEMU configuration
 ```
 
 ---
 
-## 🏆 Engineering Highlights & Resume Metrics
+## 🏆 Engineering Highlights & Resume Description
 
-* **Lock Partitioning:** Partitioned circular buffers per CPU core, eliminating multi-core synchronization bottlenecks and enabling sub-microsecond logging latency.
-* **Kernel Memory Protection:** Eliminated 5.3 KB stack hazards on a 4 KB xv6 kernel stack by utilizing `kalloc()` for dynamic single-page staging.
-* **Unix Abstraction Compliance:** Engineered a bi-directional `/dev/klog` character device driver supporting streaming reads and interactive writes with per-process line buffering.
+* **Core-Isolated Ring Buffering:** Partitioned circular buffers per CPU core, eliminating multi-core synchronization bottlenecks and enabling sub-microsecond logging latency.
+* **Kernel Flight Recorder:** Engineered a crash post-mortem dump hooked into kernel `panic()` that performs lock-free chronological event reconstruction to diagnose fatal crashes.
+* **Domain Subsystem Categorization:** Designed eBPF-style event classification (`PROC`, `FS`, `MEM`, `DEV`, `USER`) enabling granular user-space selective tracing.
+* **Dynamic Memory Staging:** Eliminated 5.3 KB stack hazards on a 4 KB xv6 kernel stack by utilizing `kalloc()` for dynamic single-page staging.
+* **Line-Buffered Character Driver:** Created a bi-directional `/dev/klog` character device driver supporting streaming reads and interactive writes with per-process line buffering.
 * **Zero Dependency Build:** Compiles cleanly with `0` warnings under strict `-Wall -Werror` GCC compiler flags.
 
 ---

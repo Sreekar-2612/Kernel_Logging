@@ -175,6 +175,7 @@ UPROGS=\
 	_init\
 	_kill\
 	_klog_test\
+	_panic_test\
 	_ln\
 	_ls\
 	_mkdir\

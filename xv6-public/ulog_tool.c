@@ -10,8 +10,9 @@
 #define ANSI_RED     "\033[1;31m"
 #define ANSI_RESET   "\033[0m"
 
-static const char *level_labels[] = {"DEBUG", "INFO ", "WARN ", "ERROR"};
-static const char *level_colors[] = {ANSI_CYAN, ANSI_GREEN, ANSI_YELLOW, ANSI_RED};
+static const char *level_labels[]  = {"DEBUG", "INFO ", "WARN ", "ERROR"};
+static const char *level_colors[]  = {ANSI_CYAN, ANSI_GREEN, ANSI_YELLOW, ANSI_RED};
+static const char *subsys_labels[] = {"CORE", "PROC", "FS  ", "MEM ", "TRAP", "DEV ", "USER"};
 
 static void
 print_usage(void)
@@ -21,6 +22,7 @@ print_usage(void)
   printf(1, "  -h          Display this help message\n");
   printf(1, "  -l <LEVEL>  Filter by minimum severity (DEBUG, INFO, WARN, ERROR)\n");
   printf(1, "  -p <PID>    Filter events originating from specific process ID\n");
+  printf(1, "  -t <SUBSYS> Filter by subsystem (CORE, PROC, FS, MEM, TRAP, DEV, USER)\n");
   printf(1, "  -c          Clear and flush all kernel ring buffers\n");
   printf(1, "  -s          Display kernel logging subsystem telemetry and metrics\n");
   printf(1, "  -n <COUNT>  Limit output to the last <COUNT> records\n");
@@ -40,11 +42,32 @@ parse_level_str(const char *s)
   return -1;
 }
 
+static int
+parse_subsys_str(const char *s)
+{
+  if(strcmp(s, "CORE") == 0 || strcmp(s, "core") == 0 || strcmp(s, "0") == 0)
+    return 0;
+  if(strcmp(s, "PROC") == 0 || strcmp(s, "proc") == 0 || strcmp(s, "1") == 0)
+    return 1;
+  if(strcmp(s, "FS") == 0   || strcmp(s, "fs") == 0   || strcmp(s, "2") == 0)
+    return 2;
+  if(strcmp(s, "MEM") == 0  || strcmp(s, "mem") == 0  || strcmp(s, "3") == 0)
+    return 3;
+  if(strcmp(s, "TRAP") == 0 || strcmp(s, "trap") == 0 || strcmp(s, "4") == 0)
+    return 4;
+  if(strcmp(s, "DEV") == 0  || strcmp(s, "dev") == 0  || strcmp(s, "5") == 0)
+    return 5;
+  if(strcmp(s, "USER") == 0 || strcmp(s, "user") == 0 || strcmp(s, "6") == 0)
+    return 6;
+  return -1;
+}
+
 int
 main(int argc, char *argv[])
 {
   int min_level = 0;       // Default: show all levels
   int target_pid = -1;     // Default: all PIDs
+  int target_subsys = -1;  // Default: all subsystems
   int limit_count = 64;    // Default snapshot capacity
   int clear_flag = 0;
   int stats_flag = 0;
@@ -76,6 +99,17 @@ main(int argc, char *argv[])
         target_pid = atoi(argv[++i]);
       } else {
         printf(2, "Missing argument for -p\n");
+        exit();
+      }
+    } else if(strcmp(argv[i], "-t") == 0 || strcmp(argv[i], "--subsys") == 0){
+      if(i + 1 < argc){
+        target_subsys = parse_subsys_str(argv[++i]);
+        if(target_subsys < 0){
+          printf(2, "Invalid subsystem: %s (choose CORE, PROC, FS, MEM, TRAP, DEV, USER)\n", argv[i]);
+          exit();
+        }
+      } else {
+        printf(2, "Missing argument for -t\n");
         exit();
       }
     } else if(strcmp(argv[i], "-n") == 0){
@@ -151,19 +185,25 @@ main(int argc, char *argv[])
       continue;
     if(target_pid >= 0 && entries[i].pid != (uint)target_pid)
       continue;
+    if(target_subsys >= 0 && entries[i].subsys != (uint)target_subsys)
+      continue;
+    
+    const char *subsys_str = (entries[i].subsys < 7) ? subsys_labels[entries[i].subsys] : "UNKN";
     
     if(entries[i].level < 4){
-      printf(1, "[%d] %s%s%s Core%d PID%d: %s\n",
+      printf(1, "[%d] %s%s%s [%s] Core%d PID%d: %s\n",
              entries[i].seq,
              level_colors[entries[i].level],
              level_labels[entries[i].level],
              ANSI_RESET,
+             subsys_str,
              entries[i].cpu,
              entries[i].pid,
              entries[i].msg);
     } else {
-      printf(1, "[%d] ??? Core%d PID%d: %s\n",
+      printf(1, "[%d] ??? [%s] Core%d PID%d: %s\n",
              entries[i].seq,
+             subsys_str,
              entries[i].cpu,
              entries[i].pid,
              entries[i].msg);

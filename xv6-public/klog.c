@@ -118,9 +118,25 @@ klog_fmt_hex(char *buf, int size, uint val)
   return written;
 }
 
+// Return human-readable label for subsystem ID
+const char*
+klog_subsys_name(uint subsys)
+{
+  switch(subsys){
+  case KLOG_SUBSYS_CORE: return "CORE";
+  case KLOG_SUBSYS_PROC: return "PROC";
+  case KLOG_SUBSYS_FS:   return "FS  ";
+  case KLOG_SUBSYS_MEM:  return "MEM ";
+  case KLOG_SUBSYS_TRAP: return "TRAP";
+  case KLOG_SUBSYS_DEV:  return "DEV ";
+  case KLOG_SUBSYS_USER: return "USER";
+  default:               return "UNKN";
+  }
+}
+
 // Core formatting and ring-buffer dispatch routine
 static void
-klog_emit_entry(int level, const char *fmt, uint *args)
+klog_emit_entry(uint subsys, int level, const char *fmt, uint *args)
 {
   int cpu_id;
   struct klog_cpu_buf *log;
@@ -196,6 +212,7 @@ klog_emit_entry(int level, const char *fmt, uint *args)
   entry->cpu = cpu_id;
   entry->pid = pid;
   entry->level = level;
+  entry->subsys = subsys;
   
   // Safe payload copy
   for(cursor = 0; cursor < sizeof(entry->msg) - 1 && line_buf[cursor]; cursor++)
@@ -208,20 +225,89 @@ klog_emit_entry(int level, const char *fmt, uint *args)
   popcli();
 }
 
-// Log a formatted entry at standard INFO severity
+// Log a formatted entry with explicit subsystem categorization
+void
+klog_printf_subsys(uint subsys, int level, const char *fmt, ...)
+{
+  uint *args = (uint*)(void*)&fmt + 1;
+  klog_emit_entry(subsys, level, fmt, args);
+}
+
+// Log a formatted entry at standard INFO severity under CORE subsystem
 void
 klog_printf(const char *fmt, ...)
 {
   uint *args = (uint*)(void*)&fmt + 1;
-  klog_emit_entry(KLOG_INFO, fmt, args);
+  klog_emit_entry(KLOG_SUBSYS_CORE, KLOG_INFO, fmt, args);
 }
 
-// Log a formatted entry at specified severity level
+// Log a formatted entry at specified severity level under CORE subsystem
 void
 klog_printf_level(int level, const char *fmt, ...)
 {
   uint *args = (uint*)(void*)&fmt + 1;
-  klog_emit_entry(level, fmt, args);
+  klog_emit_entry(KLOG_SUBSYS_CORE, level, fmt, args);
+}
+
+// Flight Recorder: Crash post-mortem dump invoked during kernel panic
+void
+klog_panic_dump(void)
+{
+  static struct klog_entry crash_dump[16];
+  int count = 0, cpu_id, i, j;
+  uint start, end, iter, slot;
+
+  cprintf("\n============================================================\n");
+  cprintf("   FLIGHT RECORDER: POST-MORTEM KERNEL LOG TRACE            \n");
+  cprintf("============================================================\n");
+
+  // Lock-free extraction of recent entries across all cores (panic safety)
+  for(cpu_id = 0; cpu_id < NCPU && count < 16; cpu_id++){
+    struct klog_cpu_buf *log = &cpu_logs[cpu_id];
+    if(log->head == 0)
+      continue;
+
+    if(log->head > KLOG_BUF_SIZE){
+      start = log->head - KLOG_BUF_SIZE;
+      end = log->head;
+    } else {
+      start = 0;
+      end = log->head;
+    }
+
+    if(end - start > 8)
+      start = end - 8;
+
+    for(iter = start; iter < end && count < 16; iter++){
+      slot = iter % KLOG_BUF_SIZE;
+      crash_dump[count++] = log->entries[slot];
+    }
+  }
+
+  // Sort chronologically by sequence ID
+  for(i = 0; i < count - 1; i++){
+    for(j = 0; j < count - i - 1; j++){
+      if(crash_dump[j].seq > crash_dump[j+1].seq){
+        struct klog_entry tmp = crash_dump[j];
+        crash_dump[j] = crash_dump[j+1];
+        crash_dump[j+1] = tmp;
+      }
+    }
+  }
+
+  if(count == 0){
+    cprintf("  (No kernel log records in flight)\n");
+  } else {
+    for(i = 0; i < count; i++){
+      cprintf("  [%d] Core%d PID%d [%s]: %s\n",
+              crash_dump[i].seq,
+              crash_dump[i].cpu,
+              crash_dump[i].pid,
+              klog_subsys_name(crash_dump[i].subsys),
+              crash_dump[i].msg);
+    }
+  }
+  cprintf("============================================================\n\n");
 }
 
 // Snapshot the most recent kernel log records across all processor buffers
